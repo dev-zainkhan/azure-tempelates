@@ -5,33 +5,11 @@
     "vmName": {
       "type": "string",
       "maxLength": 15,
-      "metadata": { "description": "Your VM name (max 15 characters)." }
-    },
-    "nicName": {
-      "type": "string",
-      "metadata": { "description": "Name for the NEW network interface of this VM." }
-    },
-    "existingVnetName": {
-      "type": "string",
-      "metadata": { "description": "Name of the virtual network you already created." }
-    },
-    "existingSubnetName": {
-      "type": "string",
-      "defaultValue": "default",
-      "metadata": { "description": "Name of the subnet inside that virtual network." }
-    },
-    "existingVnetResourceGroup": {
-      "type": "string",
-      "defaultValue": "[resourceGroup().name]",
-      "metadata": { "description": "Resource group of the existing VNet. Default: the same resource group you deploy into." }
+      "metadata": { "description": "VM name (max 15 characters). All other resource names are built from it." }
     },
     "location": {
       "type": "string",
-      "metadata": { "description": "Region, e.g. australiasoutheast. MUST be the same region as the existing VNet." }
-    },
-    "vmSize": {
-      "type": "string",
-      "defaultValue": "Standard_D2as_v6"
+      "metadata": { "description": "Region short name, e.g. australiasoutheast or uaenorth." }
     },
     "adminUsername": {
       "type": "string"
@@ -40,16 +18,32 @@
       "type": "securestring",
       "minLength": 12
     },
+    "vmSize": {
+      "type": "string",
+      "defaultValue": "Standard_D2as_v6"
+    },
     "rdpSourceAddress": {
       "type": "string",
-      "metadata": { "description": "Your own public IP address. Only this IP can RDP to the VM." }
+      "defaultValue": "*",
+      "metadata": { "description": "Who can RDP. * = any IP." }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.1.0.0/16"
+    },
+    "subnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.1.0.0/24"
     }
   },
   "variables": {
+    "vnetName": "[concat(parameters('vmName'), '-vnet')]",
+    "subnetName": "default",
     "nsgName": "[concat(parameters('vmName'), '-nsg')]",
     "publicIpName": "[concat(parameters('vmName'), '-ip')]",
+    "nicName": "[concat(parameters('vmName'), '-nic')]",
     "osDiskName": "[concat(parameters('vmName'), '-osdisk')]",
-    "subnetId": "[resourceId(parameters('existingVnetResourceGroup'), 'Microsoft.Network/virtualNetworks/subnets', parameters('existingVnetName'), parameters('existingSubnetName'))]"
+    "subnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]"
   },
   "resources": [
     {
@@ -60,7 +54,7 @@
       "properties": {
         "securityRules": [
           {
-            "name": "Allow-RDP-From-My-IP",
+            "name": "Allow-RDP",
             "properties": {
               "priority": 1000,
               "direction": "Inbound",
@@ -76,28 +70,46 @@
       }
     },
     {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ],
+      "properties": {
+        "addressSpace": { "addressPrefixes": [ "[parameters('vnetAddressPrefix')]" ] },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('subnetAddressPrefix')]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "type": "Microsoft.Network/publicIPAddresses",
       "apiVersion": "2023-11-01",
       "name": "[variables('publicIpName')]",
       "location": "[parameters('location')]",
       "sku": { "name": "Standard" },
-      "properties": {
-        "publicIPAllocationMethod": "Static"
-      }
+      "properties": { "publicIPAllocationMethod": "Static" }
     },
     {
       "type": "Microsoft.Network/networkInterfaces",
       "apiVersion": "2023-11-01",
-      "name": "[parameters('nicName')]",
+      "name": "[variables('nicName')]",
       "location": "[parameters('location')]",
       "dependsOn": [
-        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]",
-        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]"
       ],
       "properties": {
-        "networkSecurityGroup": {
-          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
-        },
         "ipConfigurations": [
           {
             "name": "ipconfig1",
@@ -118,12 +130,10 @@
       "name": "[parameters('vmName')]",
       "location": "[parameters('location')]",
       "dependsOn": [
-        "[resourceId('Microsoft.Network/networkInterfaces', parameters('nicName'))]"
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"
       ],
       "properties": {
-        "hardwareProfile": {
-          "vmSize": "[parameters('vmSize')]"
-        },
+        "hardwareProfile": { "vmSize": "[parameters('vmSize')]" },
         "osProfile": {
           "computerName": "[parameters('vmName')]",
           "adminUsername": "[parameters('adminUsername')]",
@@ -144,29 +154,22 @@
             "name": "[variables('osDiskName')]",
             "createOption": "FromImage",
             "deleteOption": "Delete",
-            "managedDisk": {
-              "storageAccountType": "StandardSSD_LRS"
-            }
+            "managedDisk": { "storageAccountType": "StandardSSD_LRS" }
           }
         },
         "networkProfile": {
           "networkInterfaces": [
             {
-              "id": "[resourceId('Microsoft.Network/networkInterfaces', parameters('nicName'))]",
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]",
               "properties": { "deleteOption": "Delete" }
             }
           ]
         },
         "securityProfile": {
           "securityType": "TrustedLaunch",
-          "uefiSettings": {
-            "secureBootEnabled": true,
-            "vTpmEnabled": true
-          }
+          "uefiSettings": { "secureBootEnabled": true, "vTpmEnabled": true }
         },
-        "diagnosticsProfile": {
-          "bootDiagnostics": { "enabled": true }
-        },
+        "diagnosticsProfile": { "bootDiagnostics": { "enabled": true } },
         "licenseType": "Windows_Client"
       }
     }
